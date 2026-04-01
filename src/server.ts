@@ -19,6 +19,12 @@ app.use(express.json());
 /**
  * 🚀 REGISTER (QUEUE BASED)
  */
+import { QueueEvents } from "bullmq";
+import IORedis from "ioredis";
+
+const connection = new IORedis(process.env.REDIS_URL!);
+const queueEvents = new QueueEvents("registration", { connection });
+
 app.post("/register", async (req, res) => {
   const { teamName, registrationId, psId } = req.body;
 
@@ -30,7 +36,7 @@ app.post("/register", async (req, res) => {
   }
 
   try {
-    // ✅ STEP 1: VALIDATE PS
+    // ✅ PS check
     const ps = await prisma.problemStatement.findUnique({
       where: { id: psId },
     });
@@ -42,40 +48,42 @@ app.post("/register", async (req, res) => {
       });
     }
 
-    // ✅ STEP 2: CHECK TRACK LIMIT (PRE-CHECK)
-    const count = await prisma.pSSelection.count({
-      where: {
-        problemStatement: {
-          track: ps.track,
-        },
-      },
-    });
-
-    if (count >= 18) {
-      return res.status(400).json({
-        success: false,
-        message: "Track is full",
-      });
-    }
-
-    // ✅ STEP 3: ADD TO QUEUE
+    // ✅ Add job
     const job = await registrationQueue.add("register", {
       teamName,
       registrationId,
       psId,
     });
 
+    // 🔥 WAIT FOR RESULT
+    const result = await job.waitUntilFinished(queueEvents);
+
     return res.json({
       success: true,
-      message: "Request added to queue",
-      jobId: job.id,
+      message: "Registration successful",
     });
 
-  } catch (error) {
+  } catch (error: any) {
     console.error(error);
+
+    // 🔥 HANDLE WORKER ERRORS
+    if (error.message === "TRACK_FULL") {
+      return res.status(400).json({
+        success: false,
+        message: "Track is full",
+      });
+    }
+
+    if (error.message === "ALREADY_SELECTED") {
+      return res.status(400).json({
+        success: false,
+        message: "Already selected",
+      });
+    }
+
     return res.status(500).json({
       success: false,
-      message: "Server error",
+      message: "Registration failed",
     });
   }
 });
