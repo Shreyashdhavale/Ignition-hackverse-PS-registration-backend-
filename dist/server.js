@@ -6,85 +6,94 @@ Object.defineProperty(exports, "__esModule", { value: true });
 require("dotenv/config");
 const express_1 = __importDefault(require("express"));
 const cors_1 = __importDefault(require("cors"));
-const client_1 = require("@prisma/client");
+const queue_1 = require("./queue");
+const prismaClient_1 = require("./prismaClient");
 const app = (0, express_1.default)();
-const prisma = new client_1.PrismaClient();
-const port = Number(process.env.PORT ?? 5000);
-const corsOrigin = process.env.CORS_ORIGIN ?? "http://localhost:3000";
-app.use((0, cors_1.default)({ origin: corsOrigin }));
+const port = process.env.PORT || 5000;
+app.use((0, cors_1.default)());
 app.use(express_1.default.json());
+/**
+ * 🚀 REGISTER (QUEUE BASED)
+ */
 app.post("/register", async (req, res) => {
-    try {
-        const { teamName, registrationId, psId } = req.body;
-        if (!teamName || !registrationId || !psId) {
-            return res.status(400).json({
-                success: false,
-                message: "All fields are required",
-            });
-        }
-        const existing = await prisma.registration.findUnique({
-            where: { registrationId },
+    const { teamName, registrationId, psId } = req.body;
+    if (!teamName || !registrationId || !psId) {
+        return res.status(400).json({
+            success: false,
+            message: "All fields are required",
         });
-        if (existing) {
+    }
+    try {
+        // 🔥 STEP 1: GET PS
+        const ps = await prismaClient_1.prisma.problemStatement.findUnique({
+            where: { id: psId },
+        });
+        if (!ps) {
             return res.status(400).json({
                 success: false,
-                message: "This Registration ID is already used",
+                message: "Invalid PS ID",
             });
         }
-        const newReg = await prisma.registration.create({
-            data: {
-                teamName,
-                registrationId,
-                psId,
+        // 🔥 STEP 2: COUNT TRACK
+        const count = await prismaClient_1.prisma.pSSelection.count({
+            where: {
+                problemStatement: {
+                    track: ps.track,
+                },
             },
         });
-        return res.status(201).json({
+        // 🔥 STEP 3: BLOCK IF FULL
+        if (count >= 18) {
+            return res.status(400).json({
+                success: false,
+                message: "Track is full",
+            });
+        }
+        // 🔥 STEP 4: ADD TO QUEUE
+        const job = await queue_1.registrationQueue.add("register", {
+            teamName,
+            registrationId,
+            psId,
+        });
+        return res.json({
             success: true,
-            message: "Registration successful",
-            data: newReg,
+            message: "Request added to queue",
+            jobId: job.id,
         });
     }
     catch (error) {
-        if (error.code === "P2002") {
-            return res.status(400).json({
-                success: false,
-                message: "Duplicate Registration ID",
-            });
-        }
-        console.error(error);
         return res.status(500).json({
             success: false,
             message: "Server error",
         });
     }
 });
+/**
+ * 📊 STATS API
+ */
 app.get("/stats", async (_req, res) => {
     try {
-        const data = await prisma.registration.findMany({
-            include: {
-                problemStatement: true,
-            },
-        });
-        const trackCount = {
+        const result = {
             track1: 0,
             track2: 0,
             track3: 0,
             track4: 0,
         };
-        data.forEach((item) => {
-            const track = item.problemStatement.track;
-            const key = `track${track}`;
-            trackCount[key]++;
+        const selections = await prismaClient_1.prisma.pSSelection.findMany({
+            include: {
+                problemStatement: true,
+            },
         });
-        return res.json(trackCount);
+        selections.forEach((s) => {
+            const key = `track${s.problemStatement.track}`;
+            result[key]++;
+        });
+        res.json(result);
     }
     catch (error) {
-        console.error(error);
-        return res.status(500).json({
-            message: "Error fetching stats",
-        });
+        res.status(500).json({ message: "Error fetching stats" });
     }
 });
 app.listen(port, () => {
-    console.log(`Server running on port ${port}`);
+    console.log(`🚀 Server running on port ${port}`);
 });
