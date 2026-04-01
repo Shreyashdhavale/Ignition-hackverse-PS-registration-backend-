@@ -1,60 +1,72 @@
 import "dotenv/config";
 import express from "express";
 import cors from "cors";
-import { PrismaClient } from "@prisma/client";
+import { registrationQueue } from "./queue";
+import { prisma } from "./prismaClient";
 
 const app = express();
-const prisma = new PrismaClient();
-const port = Number(process.env.PORT ?? 5000);
-const corsOrigin = process.env.CORS_ORIGIN ?? "http://localhost:3000";
+const port = process.env.PORT || 5000;
 
-app.use(cors({ origin: corsOrigin }));
+app.use(cors());
 app.use(express.json());
 
+/**
+ * 🚀 REGISTER (QUEUE BASED)
+ */
 app.post("/register", async (req, res) => {
+  const { teamName, registrationId, psId } = req.body;
+
+  if (!teamName || !registrationId || !psId) {
+    return res.status(400).json({
+      success: false,
+      message: "All fields are required",
+    });
+  }
+
   try {
-    const { teamName, registrationId, psId } = req.body;
-
-    if (!teamName || !registrationId || !psId) {
-      return res.status(400).json({
-        success: false,
-        message: "All fields are required",
-      });
-    }
-
-    const existing = await prisma.registration.findUnique({
-      where: { registrationId },
+    // 🔥 STEP 1: GET PS
+    const ps = await prisma.problemStatement.findUnique({
+      where: { id: psId },
     });
 
-    if (existing) {
+    if (!ps) {
       return res.status(400).json({
         success: false,
-        message: "This Registration ID is already used",
+        message: "Invalid PS ID",
       });
     }
 
-    const newReg = await prisma.registration.create({
-      data: {
-        teamName,
-        registrationId,
-        psId,
+    // 🔥 STEP 2: COUNT TRACK
+    const count = await prisma.pSSelection.count({
+      where: {
+        problemStatement: {
+          track: ps.track,
+        },
       },
     });
 
-    return res.status(201).json({
-      success: true,
-      message: "Registration successful",
-      data: newReg,
-    });
-  } catch (error: any) {
-    if (error.code === "P2002") {
+    // 🔥 STEP 3: BLOCK IF FULL
+    if (count >= 18) {
       return res.status(400).json({
         success: false,
-        message: "Duplicate Registration ID",
+        message: "Track is full",
       });
     }
 
-    console.error(error);
+    // 🔥 STEP 4: ADD TO QUEUE
+    const job = await registrationQueue.add("register", {
+      teamName,
+      registrationId,
+      psId,
+    });
+
+    return res.json({
+      success: true,
+      message: "Request added to queue",
+      jobId: job.id,
+    });
+
+  } catch (error) {
     return res.status(500).json({
       success: false,
       message: "Server error",
@@ -62,37 +74,36 @@ app.post("/register", async (req, res) => {
   }
 });
 
+/**
+ * 📊 STATS API
+ */
 app.get("/stats", async (_req, res) => {
   try {
-    const data = await prisma.registration.findMany({
-      include: {
-        problemStatement: true,
-      },
-    });
-
-    const trackCount: Record<string, number> = {
+    const result: Record<string, number> = {
       track1: 0,
       track2: 0,
       track3: 0,
       track4: 0,
     };
 
-    data.forEach((item: { problemStatement: { track: number } }) => {
-      const track = item.problemStatement.track;
-      const key = `track${track}`;
-
-      trackCount[key]++;
+    const selections = await prisma.pSSelection.findMany({
+      include: {
+        problemStatement: true,
+      },
     });
 
-    return res.json(trackCount);
+    selections.forEach((s) => {
+      const key = `track${s.problemStatement.track}`;
+      result[key]++;
+    });
+
+    res.json(result);
+
   } catch (error) {
-    console.error(error);
-    return res.status(500).json({
-      message: "Error fetching stats",
-    });
+    res.status(500).json({ message: "Error fetching stats" });
   }
 });
 
 app.listen(port, () => {
-  console.log(`Server running on port ${port}`);
+  console.log(`🚀 Server running on port ${port}`);
 });
