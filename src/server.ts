@@ -22,7 +22,9 @@ app.use(express.json());
 import { QueueEvents } from "bullmq";
 import IORedis from "ioredis";
 
-const connection = new IORedis(process.env.REDIS_URL!);
+const connection = new IORedis(process.env.REDIS_URL!, {
+  maxRetriesPerRequest: null,
+});
 const queueEvents = new QueueEvents("registration", { connection });
 
 app.post("/register", async (req, res) => {
