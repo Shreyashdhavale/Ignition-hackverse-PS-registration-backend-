@@ -4,10 +4,16 @@ import cors from "cors";
 import { registrationQueue } from "./queue";
 import { prisma } from "./prismaClient";
 
+// 🔥 IMPORTANT: START WORKER INSIDE SERVER
+import "./worker";
+
 const app = express();
 const port = process.env.PORT || 5000;
 
-app.use(cors());
+app.use(cors({
+  origin: "*", // ⚠️ change to your Vercel URL later
+}));
+
 app.use(express.json());
 
 /**
@@ -24,7 +30,7 @@ app.post("/register", async (req, res) => {
   }
 
   try {
-    // 🔥 STEP 1: GET PS
+    // ✅ STEP 1: VALIDATE PS
     const ps = await prisma.problemStatement.findUnique({
       where: { id: psId },
     });
@@ -36,7 +42,7 @@ app.post("/register", async (req, res) => {
       });
     }
 
-    // 🔥 STEP 2: COUNT TRACK
+    // ✅ STEP 2: CHECK TRACK LIMIT (PRE-CHECK)
     const count = await prisma.pSSelection.count({
       where: {
         problemStatement: {
@@ -45,7 +51,6 @@ app.post("/register", async (req, res) => {
       },
     });
 
-    // 🔥 STEP 3: BLOCK IF FULL
     if (count >= 18) {
       return res.status(400).json({
         success: false,
@@ -53,7 +58,7 @@ app.post("/register", async (req, res) => {
       });
     }
 
-    // 🔥 STEP 4: ADD TO QUEUE
+    // ✅ STEP 3: ADD TO QUEUE
     const job = await registrationQueue.add("register", {
       teamName,
       registrationId,
@@ -67,6 +72,7 @@ app.post("/register", async (req, res) => {
     });
 
   } catch (error) {
+    console.error(error);
     return res.status(500).json({
       success: false,
       message: "Server error",
@@ -100,10 +106,11 @@ app.get("/stats", async (_req, res) => {
     res.json(result);
 
   } catch (error) {
+    console.error(error);
     res.status(500).json({ message: "Error fetching stats" });
   }
 });
 
 app.listen(port, () => {
-  console.log(`🚀 Server running on port ${port}`);
+  console.log(`🚀 Server + Worker running on port ${port}`);
 });
